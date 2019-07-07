@@ -1,0 +1,194 @@
+   Exploring Genode Base HW with Raspberry Pi - beginning
+
+It started few months ago.
+
+I bought a Raspberry Pi 3B+. At first without any explicit plans for
+it. During first boot Noobs started and I was asked to choose if I
+want to install Raspian or FreeRTOS and I thought that it would be
+great to have Genode Sculpt available there. I knew I can spend only
+few hours a week on it so it seemed to be a great project for
+start. Not complicated. There was Raspberry Pi support already in
+Genode. I thought I'll do some touches here and there and will make it
+work with newer model.
+
+And as time passed I realized more and more, how little I new...
+
+Currently, after few months, I have somewhat working most important
+devices (keyboard, mouse, framebuffer and networking) and I think that
+I'm somewhere halfway to my original goal. Not bad for a simple project
+for a start, isn't it? :-)
+
+I think it is a good moment for starting sharing my experiences,
+document what steps I had to perform and list references that can help
+others when they try to do something similar. And maybe be more
+prepared than I was.
+
+This first part is about preparation steps I took to have a bootable
+image loaded easily after each recompilation. Typically kernel and os
+is available on an SD card in the device but for development it would
+be a pain to be forced to transfer each new version to SD card so I
+used u-boot on Raspberry Pi with tftp server on development box.
+
+There is really nothing revealing in this text. It's just a checklist
+what should be done (maybe even not everything is needed) to prepare a
+working environment for development Genode with Raspberry Pi (for rpi3
+it is 32bit only). All of this is tested on Ubuntu 18.04.
+
+
+Compiling u-boot
+----------------
+
+Install arm compiler.
+
+! sudo apt install gcc-arm-linux-gnueabi
+
+Clone u-boot repository.
+
+! git clone git://git.denx.de/u-boot.git
+
+Optionally apply patch for u-boot that is needed if/when you want to
+compile some big scenario. It was required for me to run
+'depot_autopilot' successfully.
+
+! diff --git a/include/configs/rpi.h b/include/configs/rpi.h
+! index 9ce41767a9..3ad659f0dc 100644
+! --- a/include/configs/rpi.h
+! +++ b/include/configs/rpi.h
+! @@ -23,6 +23,12 @@
+!         (&((struct bcm2835_timer_regs *)BCM2835_TIMER_PHYSADDR)->clo)
+!  #endif
+!  
+! +/*
+! + * Normally uncompressed image cannot exceed 8MB. This changes it to
+! + * 128MB which is enough for depot-autopilot.
+! + */
+! +#define CONFIG_SYS_BOOTM_LEN   (128 << 20)     /* 128M */
+! +
+!  /*
+!   * 2835 is a SKU in a series for which the 2708 is the first or primary SoC,
+!   * so 2708 has historically been used rather than a dedicated 2835 ID.
+
+
+Configure and build u-boot (replace 'rpi_3_32b_defconfig' with
+'rpi_defconfig' or 'rpi_2_defconfig' for RPI or RPI2 accordingly).
+
+! (export CROSS_COMPILE=arm-linux-gnueabi- && make rpi_3_32b_defconfig)
+! (export CROSS_COMPILE=arm-linux-gnueabi- && make all -j8 -s)
+
+
+Preparing SD card
+-----------------
+
+FAT partition is required. Probably 64MB is enough (I have 256MB just
+in case). It's probably easiest to use gparted to make
+partitioning. My partitioning of SD card is:
+
+! (parted) p                                                                
+! Model: SD SA16G (sd/mmc)
+! Disk /dev/mmcblk0: 15,6GB
+! Sector size (logical/physical): 512B/512B
+! Partition Table: msdos
+! Disk Flags: 
+! 
+! Number  Start   End     Size    Type     File system  Flags
+!  1      1049kB  269MB   268MB   primary  fat32
+!  2      269MB   15,6GB  15,3GB  primary  ext2
+
+Get Raspberry Pi firmware:
+
+! git clone --depth 1 https://github.com/raspberrypi/firmware.git
+
+Mount first (FAT) partition somewhere (device name can be different probably)
+
+! sudo mount /dev/mmcblk0p1 <mountdir>
+
+Copy content of boot dir from firmware to SD card.
+
+! sudo rsync -a --no-owner --no-group firmware/boot/ <mountdir>
+
+Copy U-boot kernel to SD card.
+
+! sudo cp <u-boot_dir>/u-boot.bin <mountdir>
+
+Create proper 'config.txt'
+
+! sudo cat > <mountdir>/config.txt <<END
+! kernel=u-boot.bin
+! enable_uart=1
+! init_uart_baud=115200
+! init_uart_clock=3000000
+! END
+
+Setting up tftp server
+----------------------
+
+Install default tftp server on Ubuntu.
+
+! sudo apt install tftpd-hpa
+
+Create directory from which compiled images will be downloaded by device.
+
+! sudo mkdir /var/lib/tftpboot/<device_dir>
+
+Change directory owner to self to be able to copy images without 'sudo'.
+
+! sudo chown <user>.<user> /var/lib/tftpboot/<device_dir>
+
+
+U-boot configuration
+--------------------
+
+After starting device u-boot should start and try to perform default
+boot. It would be better (for development) to have UART properly
+connected to build machine although it is possible to configure this
+part with keyboard connected to Raspbery Pi.
+
+Set load address to not overlap with addresses in built images.
+
+! U-Boot> setenv loadaddr 0x08000000
+
+Provide information about boot image location.
+
+! U-Boot> setenv bootfile <server_ip>:<device_dir>/uImage
+
+Following command is the only one I found working in case static IP
+for Raspberry Pi is needed. Setting ipaddr into environment did not
+work as it was overwritten during startup. Note that quotes are
+required. In case address from DHCP server is needed setting
+'tftpboot' as value is enough.
+
+! U-Boot> setenv bootcmd "setenv ipaddr <rpi_ip>; tftpboot"
+
+Enable automatic boot.
+
+! U-Boot> setenv autostart yes
+
+Save setup (in some cases I got errors but repating this command
+worked).
+
+! U-Boot> saveenv
+! Saving Environment to FAT... OK
+
+
+Genode build configuration
+--------------------------
+
+Configure build directory accordingly to standard Genode documentation
+('arm_v6' for rpi1 and 'arm_v7a' for rpi2 or rpi3_32).
+
+For rpi2 or rpi3_32 currently one of my working branches is needed
+([https://github.com/tomga/genode/tree/rpi3bplus_19.02 - rpi3bplus_19.02] or
+[https://github.com/tomga/genode/tree/rpi_staging_20190620 - rpi_staging_20190620]).
+
+Additionally add following to build.conf:
+
+! RUN_OPT += --include image/uboot
+! RUN_OPT += --include load/tftp
+! RUN_OPT += --load-tftp-base-dir /var/lib/tftpboot
+! RUN_OPT += --load-tftp-offset-dir /<device_dir>
+! RUN_OPT += --log-serial-cmd 'picocom -b 115200 /dev/<device_tty>'
+
+After this you should be able to almost automatically compile and run
+tests on device with one caveeat: device must be restarted after
+compilation manually. I'll describe my solution to this in next
+article.
